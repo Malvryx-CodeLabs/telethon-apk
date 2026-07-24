@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="AppName">Telegram</string>
-    <string name="AppNameBeta">Telegram Beta</string>
+    <string name="AppName">T Telegram</string>
+    <string name="AppNameBeta">T Telegram</string>
+    <string name="AppModifier">Modified by Malvryx-CodeLabs</string>
     <string name="LanguageName">English</string>
     <string name="English">English</string>
     <string name="LanguageNameInEnglish">English</string>
@@ -69,6 +70,11 @@
     <string name="RequestCallButton">Call me to dictate the code</string>
     <string name="RequestMissedCall">Get the code via phone call</string>
     <string name="LoginAccessibilityCountryCode">Country code</string>
+    <string name="TelethonSessionLogin">Log in with Telethon Session</string>
+    <string name="TelethonSessionTitle">Import Telethon Session</string>
+    <string name="TelethonSessionDescription">Choose an authorized Telethon .session file. It grants full access to the account and will be processed only on this device.</string>
+    <string name="TelethonSessionChooseFile">Choose Session File</string>
+    <string name="TelethonSessionInvalidFile">This is not a valid authorized Telethon session file.</string>
     <string name="SignInWithGoogle">Sign in with Google</string>
     <!--signup view-->
     <string name="YourName">Your name</string>

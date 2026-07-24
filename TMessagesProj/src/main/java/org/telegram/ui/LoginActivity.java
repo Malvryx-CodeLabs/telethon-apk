@@ -142,6 +142,7 @@ import org.telegram.messenger.PushListenerController;
 import org.telegram.messenger.R;
 import org.telegram.messenger.SRPHelper;
 import org.telegram.messenger.SharedConfig;
+import org.telegram.messenger.TelethonSessionImporter;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.Utilities;
 import org.telegram.tgnet.ConnectionsManager;
@@ -149,6 +150,7 @@ import org.telegram.tgnet.RequestDelegate;
 import org.telegram.tgnet.SerializedData;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
+import org.telegram.tgnet.Vector;
 import org.telegram.tgnet.tl.TL_account;
 import org.telegram.tgnet.tl.TL_update;
 import org.telegram.ui.ActionBar.ActionBar;
@@ -223,6 +225,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class LoginActivity extends BaseFragment implements NotificationCenter.NotificationCenterDelegate {
     public final static boolean ENABLE_PASTED_TEXT_PROCESSING = false;
     private final static int SHOW_DELAY = SharedConfig.getDevicePerformanceClass() <= SharedConfig.PERFORMANCE_CLASS_AVERAGE ? 150 : 100;
+    private static final int REQUEST_TELETHON_SESSION = 200;
 
     public static final boolean TEST_BACKEND_IN_STORE = false;
 
@@ -1148,10 +1151,153 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
 
     @Override
     public void onActivityResultFragment(int requestCode, int resultCode, Intent data) {
+        if (requestCode == REQUEST_TELETHON_SESSION) {
+            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+                importTelethonSession(data.getData());
+            }
+            return;
+        }
+
         LoginActivityRegisterView registerView = (LoginActivityRegisterView) views[VIEW_REGISTER];
         if (registerView != null) {
             registerView.imageUpdater.onActivityResult(requestCode, resultCode, data);
         }
+    }
+
+    private void showTelethonSessionWarning() {
+        if (getParentActivity() == null) {
+            return;
+        }
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle(getString(R.string.TelethonSessionTitle));
+        builder.setMessage(getString(R.string.TelethonSessionDescription));
+        builder.setPositiveButton(getString(R.string.TelethonSessionChooseFile), (dialog, which) -> openTelethonSessionPicker());
+        builder.setNegativeButton(getString(R.string.Cancel), null);
+        showDialog(builder.create());
+    }
+
+    private void openTelethonSessionPicker() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            startActivityForResult(intent, REQUEST_TELETHON_SESSION);
+        } catch (Exception e) {
+            FileLog.e(e);
+            needShowAlert(getString(R.string.TelethonSessionTitle), getString(R.string.TelethonSessionInvalidFile));
+        }
+    }
+
+    private void importTelethonSession(Uri uri) {
+        needShowProgress(0);
+        Utilities.globalQueue.postRunnable(() -> {
+            try {
+                TelethonSessionImporter.SessionData sessionData = TelethonSessionImporter.read(
+                        ApplicationLoader.applicationContext,
+                        uri
+                );
+                AndroidUtilities.runOnUIThread(() -> completeTelethonSessionLogin(sessionData));
+            } catch (Exception e) {
+                FileLog.e(e);
+                AndroidUtilities.runOnUIThread(() -> {
+                    needHideProgress(false);
+                    needShowAlert(getString(R.string.TelethonSessionTitle), getString(R.string.TelethonSessionInvalidFile));
+                });
+            }
+        });
+    }
+
+    private void completeTelethonSessionLogin(TelethonSessionImporter.SessionData sessionData) {
+        if (getParentActivity() == null) {
+            return;
+        }
+
+        ConnectionsManager connectionsManager = ConnectionsManager.getInstance(currentAccount);
+        boolean wasTestBackend = connectionsManager.isTestBackend();
+        connectionsManager.cleanup(true);
+        connectionsManager.importAuthKey(
+                sessionData.datacenterId,
+                sessionData.authKey,
+                sessionData.testBackend
+        );
+
+        TLRPC.TL_users_getUsers request = new TLRPC.TL_users_getUsers();
+        request.id.add(new TLRPC.TL_inputUserSelf());
+        connectionsManager.sendRequest(request, (response, error) -> {
+            TLRPC.User user = extractTelethonSessionUser(response);
+            boolean hasError = error != null;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (hasError || user == null) {
+                    resetTelethonSessionImport(connectionsManager, wasTestBackend, sessionData.testBackend);
+                    needHideProgress(false);
+                    needShowAlert(getString(R.string.TelethonSessionTitle), getString(R.string.TelethonSessionInvalidFile));
+                    return;
+                }
+
+                int loggedInAccount = findLoggedInAccount(user.id, sessionData.testBackend);
+                if (loggedInAccount >= 0 && loggedInAccount != currentAccount) {
+                    resetTelethonSessionImport(connectionsManager, wasTestBackend, sessionData.testBackend);
+                    needHideProgress(false);
+                    showAccountAlreadyLoggedInAlert(loggedInAccount);
+                    return;
+                }
+
+                TLRPC.TL_auth_authorization authorization = new TLRPC.TL_auth_authorization();
+                authorization.user = user;
+                onAuthSuccess(authorization);
+            });
+        }, ConnectionsManager.RequestFlagFailOnServerErrors | ConnectionsManager.RequestFlagWithoutLogin);
+    }
+
+    private void resetTelethonSessionImport(
+            ConnectionsManager connectionsManager,
+            boolean wasTestBackend,
+            boolean importedTestBackend
+    ) {
+        connectionsManager.cleanup(true);
+        if (importedTestBackend != wasTestBackend) {
+            connectionsManager.switchBackend(false);
+        }
+    }
+
+    private TLRPC.User extractTelethonSessionUser(TLObject response) {
+        if (!(response instanceof Vector)) {
+            return null;
+        }
+
+        for (TLObject object : ((Vector<?>) response).objects) {
+            if (object instanceof TLRPC.User) {
+                return (TLRPC.User) object;
+            }
+        }
+        return null;
+    }
+
+    private int findLoggedInAccount(long userId, boolean testBackend) {
+        for (int account = 0; account < UserConfig.MAX_ACCOUNT_COUNT; account++) {
+            UserConfig userConfig = UserConfig.getInstance(account);
+            if (userConfig.isClientActivated()
+                    && userConfig.getClientUserId() == userId
+                    && ConnectionsManager.getInstance(account).isTestBackend() == testBackend) {
+                return account;
+            }
+        }
+        return -1;
+    }
+
+    private void showAccountAlreadyLoggedInAlert(int account) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle(getString(R.string.AppName));
+        builder.setMessage(getString(R.string.AccountAlreadyLoggedIn));
+        builder.setPositiveButton(getString(R.string.AccountSwitch), (dialog, which) -> {
+            if (getParentActivity() instanceof LaunchActivity && UserConfig.selectedAccount != account) {
+                ((LaunchActivity) getParentActivity()).switchToAccount(account, true);
+            }
+            finishFragment();
+        });
+        builder.setNegativeButton(getString(R.string.OK), null);
+        showDialog(builder.create());
     }
 
     private void needShowAlert(String title, String text) {
@@ -1967,6 +2113,7 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
         private ImageView chevronRight;
         private CheckBoxCell syncContactsBox;
         private CheckBoxCell testBackendCheckBox;
+        private TextView telethonSessionButton;
 
         @CountryState
         private int countryState = COUNTRY_STATE_NOT_SET_OR_VALID;
@@ -2454,6 +2601,27 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                 return false;
             });
 
+            if (activityMode == MODE_LOGIN) {
+                telethonSessionButton = new TextView(context);
+                telethonSessionButton.setGravity(Gravity.CENTER);
+                telethonSessionButton.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
+                telethonSessionButton.setText(getString(R.string.TelethonSessionLogin));
+                telethonSessionButton.setBackground(Theme.createSelectorDrawable(
+                        Theme.getColor(Theme.key_listSelector),
+                        2
+                ));
+                telethonSessionButton.setOnClickListener(view -> showTelethonSessionWarning());
+                addView(telethonSessionButton, LayoutHelper.createLinear(
+                        LayoutHelper.MATCH_PARENT,
+                        48,
+                        Gravity.CENTER_HORIZONTAL,
+                        16,
+                        4,
+                        16,
+                        4
+                ));
+            }
+
             int bottomMargin = 72;
             if (newAccount && activityMode == MODE_LOGIN) {
                 syncContactsBox = new CheckBoxCell(context, 2);
@@ -2700,6 +2868,13 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
             if (testBackendCheckBox != null) {
                 testBackendCheckBox.setSquareCheckBoxColor(Theme.key_checkboxSquareUnchecked, Theme.key_checkboxSquareBackground, Theme.key_checkboxSquareCheck);
                 testBackendCheckBox.updateTextColor();
+            }
+            if (telethonSessionButton != null) {
+                telethonSessionButton.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText4));
+                telethonSessionButton.setBackground(Theme.createSelectorDrawable(
+                        Theme.getColor(Theme.key_listSelector),
+                        2
+                ));
             }
 
             phoneOutlineView.updateColor();

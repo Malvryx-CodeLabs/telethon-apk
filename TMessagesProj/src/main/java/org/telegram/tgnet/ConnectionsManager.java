@@ -200,6 +200,12 @@ public class ConnectionsManager extends BaseController {
         return localInstance;
     }
 
+    public static boolean hasInstance(int num) {
+        synchronized (ConnectionsManager.class) {
+            return Instance[num] != null;
+        }
+    }
+
     public ConnectionsManager(int instance) {
         super(instance);
         connectionState = native_getConnectionState(currentAccount);
@@ -675,7 +681,9 @@ public class ConnectionsManager extends BaseController {
     public static void setLangCode(String langCode) {
         langCode = langCode.replace('_', '-').toLowerCase();
         for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
-            native_setLangCode(a, langCode);
+            if (hasInstance(a)) {
+                native_setLangCode(a, langCode);
+            }
         }
     }
 
@@ -692,14 +700,18 @@ public class ConnectionsManager extends BaseController {
             pushString = SharedConfig.pushStringStatus = "__" + tag + "_GENERATING_SINCE_" + getInstance(0).getCurrentTime() + "__";
         }
         for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
-            native_setRegId(a, pushString);
+            if (hasInstance(a)) {
+                native_setRegId(a, pushString);
+            }
         }
     }
 
     public static void setSystemLangCode(String langCode) {
         langCode = langCode.replace('_', '-').toLowerCase();
         for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
-            native_setSystemLangCode(a, langCode);
+            if (hasInstance(a)) {
+                native_setSystemLangCode(a, langCode);
+            }
         }
     }
 
@@ -723,6 +735,10 @@ public class ConnectionsManager extends BaseController {
 
     public void setDefaultDatacenterId(int dcId) {
         native_moveDatacenter(currentAccount, dcId);
+    }
+
+    public void importAuthKey(int datacenterId, byte[] authKey, boolean testBackend) {
+        native_importAuthKey(currentAccount, datacenterId, authKey, testBackend);
     }
 
     public long getPauseTime() {
@@ -963,10 +979,12 @@ public class ConnectionsManager extends BaseController {
         }
 
         for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
-            if (enabled && !TextUtils.isEmpty(address)) {
-                native_setProxySettings(a, address, port, username, password, secret);
-            } else {
-                native_setProxySettings(a, "", 1080, "", "", "");
+            if (hasInstance(a)) {
+                if (enabled && !TextUtils.isEmpty(address)) {
+                    native_setProxySettings(a, address, port, username, password, secret);
+                } else {
+                    native_setProxySettings(a, "", 1080, "", "", "");
+                }
             }
             AccountInstance accountInstance = AccountInstance.getInstance(a);
             if (accountInstance.getUserConfig().isClientActivated()) {
@@ -981,6 +999,7 @@ public class ConnectionsManager extends BaseController {
     public static native void native_setIpStrategy(int currentAccount, byte value);
     public static native void native_updateDcSettings(int currentAccount);
     public static native void native_moveDatacenter(int currentAccount, int datacenterId);
+    public static native void native_importAuthKey(int currentAccount, int datacenterId, byte[] authKey, boolean testBackend);
     public static native void native_setNetworkAvailable(int currentAccount, boolean value, int networkType, boolean slow);
     public static native void native_resumeNetwork(int currentAccount, boolean partial);
     public static native long native_getCurrentTimeMillis(int currentAccount);

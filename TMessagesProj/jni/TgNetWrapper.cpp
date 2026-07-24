@@ -277,6 +277,29 @@ void moveDatacenter(JNIEnv *env, jclass c, jint instanceNum, jint datacenterId) 
     ConnectionsManager::getInstance(instanceNum).moveToDatacenter(datacenterId);
 }
 
+void importAuthKey(JNIEnv *env, jclass c, jint instanceNum, jint datacenterId, jbyteArray authKey, jboolean testBackend) {
+    if (authKey == nullptr || datacenterId < 1 || datacenterId > (testBackend ? 3 : 5)) {
+        return;
+    }
+
+    jsize authKeyLength = env->GetArrayLength(authKey);
+    if (authKeyLength != 256) {
+        return;
+    }
+
+    auto authKeyBytes = new ByteArray((uint32_t) authKeyLength);
+    env->GetByteArrayRegion(authKey, 0, authKeyLength, reinterpret_cast<jbyte *>(authKeyBytes->bytes));
+    if (env->ExceptionCheck()) {
+        delete authKeyBytes;
+        return;
+    }
+    ConnectionsManager::getInstance(instanceNum).importAuthKey(
+            (uint32_t) datacenterId,
+            authKeyBytes,
+            testBackend
+    );
+}
+
 void setIpStrategy(JNIEnv *env, jclass c, jint instanceNum, jbyte value) {
     ConnectionsManager::getInstance(instanceNum).setIpStrategy((uint8_t) value);
 }
@@ -477,7 +500,9 @@ void init(JNIEnv *env, jclass c, jint instanceNum, jint version, jint layer, jin
     const char *installerIdStr = env->GetStringUTFChars(installerId, 0);
     const char *packageIdStr = env->GetStringUTFChars(packageId, 0);
 
-    ConnectionsManager::getInstance(instanceNum).init((uint32_t) version, layer, apiId, std::string(deviceModelStr), std::string(systemVersionStr), std::string(appVersionStr), std::string(langCodeStr), std::string(systemLangCodeStr), std::string(configPathStr), std::string(logPathStr), std::string(regIdStr), std::string(cFingerprintStr), std::string(installerIdStr), std::string(packageIdStr), timezoneOffset, userId, userPremium, true, enablePushConnection, hasNetwork, networkType, performanceClass);
+    ConnectionsManager &connectionsManager = ConnectionsManager::getInstance(instanceNum);
+    connectionsManager.setDelegate(new Delegate());
+    connectionsManager.init((uint32_t) version, layer, apiId, std::string(deviceModelStr), std::string(systemVersionStr), std::string(appVersionStr), std::string(langCodeStr), std::string(systemLangCodeStr), std::string(configPathStr), std::string(logPathStr), std::string(regIdStr), std::string(cFingerprintStr), std::string(installerIdStr), std::string(packageIdStr), timezoneOffset, userId, userPremium, true, enablePushConnection, hasNetwork, networkType, performanceClass);
 
     if (deviceModelStr != 0) {
         env->ReleaseStringUTFChars(deviceModel, deviceModelStr);
@@ -516,9 +541,6 @@ void init(JNIEnv *env, jclass c, jint instanceNum, jint version, jint layer, jin
 
 void setJava(JNIEnv *env, jclass c, jboolean useJavaByteBuffers) {
     ConnectionsManager::useJavaVM(java, useJavaByteBuffers);
-    for (int a = 0; a < MAX_ACCOUNT_COUNT; a++) {
-        ConnectionsManager::getInstance(a).setDelegate(new Delegate());
-    }
 }
 
 static const char *ConnectionsManagerClassPathName = "org/telegram/tgnet/ConnectionsManager";
@@ -548,6 +570,7 @@ static JNINativeMethod ConnectionsManagerMethods[] = {
         {"native_resumeNetwork", "(IZ)V", (void *) resumeNetwork},
         {"native_updateDcSettings", "(I)V", (void *) updateDcSettings},
         {"native_moveDatacenter", "(II)V", (void *) moveDatacenter},
+        {"native_importAuthKey", "(II[BZ)V", (void *) importAuthKey},
         {"native_setIpStrategy", "(IB)V", (void *) setIpStrategy},
         {"native_setNetworkAvailable", "(IZIZ)V", (void *) setNetworkAvailable},
         {"native_setPushConnectionEnabled", "(IZ)V", (void *) setPushConnectionEnabled},

@@ -10,13 +10,16 @@
 #include <cstdlib>
 #include <sys/eventfd.h>
 #include <unistd.h>
+#include <atomic>
 #include <chrono>
 #include <algorithm>
 #include <fcntl.h>
 #include <memory.h>
 #include <openssl/rand.h>
+#include <openssl/sha.h>
 #include <zlib.h>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <cinttypes>
 #include "ConnectionsManager.h"
@@ -136,24 +139,25 @@ ConnectionsManager::~ConnectionsManager() {
 }
 
 ConnectionsManager& ConnectionsManager::getInstance(int32_t instanceNum) {
-    switch (instanceNum) {
-        case 0:
-            static ConnectionsManager instance0(0);
-            return instance0;
-        case 1:
-            static ConnectionsManager instance1(1);
-            return instance1;
-        case 2:
-            static ConnectionsManager instance2(2);
-            return instance2;
-        case 3:
-            static ConnectionsManager instance3(3);
-            return instance3;
-        case 4:
-        default:
-            static ConnectionsManager instance4(4);
-            return instance4;
+    static std::atomic<ConnectionsManager *> instances[MAX_ACCOUNT_COUNT] = {};
+    static std::mutex instancesMutex;
+
+    if (instanceNum < 0 || instanceNum >= MAX_ACCOUNT_COUNT) {
+        instanceNum = 0;
     }
+
+    ConnectionsManager *instance = instances[instanceNum].load(std::memory_order_acquire);
+    if (instance != nullptr) {
+        return *instance;
+    }
+
+    std::lock_guard<std::mutex> lock(instancesMutex);
+    instance = instances[instanceNum].load(std::memory_order_relaxed);
+    if (instance == nullptr) {
+        instance = new ConnectionsManager(instanceNum);
+        instances[instanceNum].store(instance, std::memory_order_release);
+    }
+    return *instance;
 }
 
 int ConnectionsManager::callEvents(int64_t now) {
@@ -2051,6 +2055,41 @@ void ConnectionsManager::switchBackend(bool restart) {
         if (restart) {
             exit(1);
         }
+    });
+}
+
+void ConnectionsManager::importAuthKey(uint32_t datacenterId, ByteArray *authKey, bool test) {
+    scheduleTask([&, datacenterId, authKey, test] {
+        if (testBackend != test) {
+            testBackend = test;
+            Handshake::cleanupServerKeys();
+            datacenters.clear();
+            initDatacenters();
+        }
+
+        currentUserId = 0;
+        currentUserPremium = false;
+        currentDatacenterId = datacenterId;
+        movingToDatacenterId = DEFAULT_DATACENTER_ID;
+
+        Datacenter *datacenter = getDatacenterWithId(datacenterId);
+        if (datacenter == nullptr) {
+            delete authKey;
+            return;
+        }
+
+        datacenter->clearAuthKey(HandshakeTypeAll);
+        datacenter->authKeyPerm = authKey;
+
+        uint8_t authKeyHash[SHA_DIGEST_LENGTH];
+        SHA1(authKey->bytes, authKey->length, authKeyHash);
+        memcpy(&datacenter->authKeyPermId, authKeyHash + SHA_DIGEST_LENGTH - sizeof(int64_t), sizeof(int64_t));
+
+        datacenter->authorized = true;
+        datacenter->recreateSessions(HandshakeTypeAll);
+        datacenter->beginHandshake(HandshakeTypeAll, true);
+        saveConfig();
+        processRequestQueue(AllConnectionTypes, datacenterId);
     });
 }
 
